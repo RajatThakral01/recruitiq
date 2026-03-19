@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - ./frontend:/app/frontend
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: recruitiq
+      POSTGRES_PASSWORD: recruitiq
+      POSTGRES_DB: recruitiq
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
