@@ -82,6 +82,9 @@ def init_db():
         created_at TIMESTAMP DEFAULT NOW()
     );
 
+    -- Add relevant_experience column to existing resumes tables safely
+    ALTER TABLE resumes ADD COLUMN IF NOT EXISTS relevant_experience FLOAT DEFAULT 0.0;
+
     CREATE TABLE IF NOT EXISTS screening_jobs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         jd_id UUID REFERENCES job_descriptions(id),

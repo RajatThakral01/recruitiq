@@ -16,6 +16,7 @@ class ResumeEntity:
     education_level: str  # "Bachelor", "Master", "PhD", "Other"
     projects: list[dict]  # [{name, description, tech_stack, metrics}]
     quality_flag: str     # "high", "medium", "low"
+    relevant_experience: float = 0.0  # years directly relevant to the applied role
     created_at: datetime = field(default_factory=datetime.now)
 
     @classmethod
@@ -33,6 +34,7 @@ class ResumeEntity:
             education_level=data.get("education_level", "Other"),
             projects=data.get("projects", []),
             quality_flag=data.get("quality_flag", "medium"),
+            relevant_experience=float(data.get("relevant_experience", 0.0)),
             created_at=data.get("created_at", datetime.now())
         )
 

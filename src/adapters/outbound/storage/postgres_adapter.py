@@ -45,11 +45,11 @@ class PostgresAdapter(StoragePort):
             INSERT INTO resumes (
                 id, candidate_name, email, raw_text,
                 parsed_skills, years_experience, education_level,
-                projects, quality_flag, created_at
+                projects, quality_flag, relevant_experience, created_at
             ) VALUES (
                 %(id)s, %(candidate_name)s, %(email)s, %(raw_text)s,
                 %(parsed_skills)s::jsonb, %(years_experience)s, %(education_level)s,
-                %(projects)s::jsonb, %(quality_flag)s, %(created_at)s
+                %(projects)s::jsonb, %(quality_flag)s, %(relevant_experience)s, %(created_at)s
             )
             ON CONFLICT (id) DO NOTHING
             RETURNING id;
@@ -64,6 +64,7 @@ class PostgresAdapter(StoragePort):
             "education_level": resume.education_level,
             "projects": self._j(resume.projects),
             "quality_flag": resume.quality_flag,
+            "relevant_experience": resume.relevant_experience,
             "created_at": resume.created_at.isoformat() if hasattr(resume.created_at, "isoformat") else str(resume.created_at),
         }
         try:
@@ -80,7 +81,7 @@ class PostgresAdapter(StoragePort):
 
     def get_resume(self, resume_id: str) -> ResumeEntity:
         """Fetch a single resume by UUID."""
-        sql = "SELECT id, candidate_name, email, raw_text, parsed_skills, years_experience, education_level, projects, quality_flag, created_at FROM resumes WHERE id = %s;"
+        sql = "SELECT id, candidate_name, email, raw_text, parsed_skills, years_experience, education_level, projects, quality_flag, relevant_experience, created_at FROM resumes WHERE id = %s;"
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
@@ -98,7 +99,8 @@ class PostgresAdapter(StoragePort):
                 education_level=row[6] or "Other",
                 projects=row[7] if isinstance(row[7], list) else json.loads(row[7] or "[]"),
                 quality_flag=row[8] or "medium",
-                created_at=row[9] if isinstance(row[9], datetime) else datetime.now(),
+                relevant_experience=float(row[9] or 0.0),
+                created_at=row[10] if isinstance(row[10], datetime) else datetime.now(),
             )
         except DatabaseException:
             raise
@@ -334,3 +336,14 @@ class PostgresAdapter(StoragePort):
         except Exception as e:
             logger.error(f"update_job_status failed: {e}")
             raise DatabaseException("Could not update job status.", detail=str(e))
+
+    def job_exists(self, job_id: str) -> bool:
+        """Check if a screening job exists."""
+        sql = "SELECT 1 FROM screening_jobs WHERE id = %s"
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (job_id,))
+                    return cur.fetchone() is not None
+        except Exception:
+            return False

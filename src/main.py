@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -52,26 +53,33 @@ async def serve_frontend():
     paths_to_check = [
         Path("frontend/code.html"),
         Path("frontend/frontend/code.html"),
-        Path("frontend:/code.html")  # Handle the colon directory if present
+        Path("frontend:/code.html"),  # Handle the colon directory if present
     ]
-    
+
     for file_path in paths_to_check:
         if file_path.exists():
             return FileResponse(str(file_path))
-        
+
     return {
-        "error": "Frontend file not found", 
-        "looked_at": [str(p.absolute()) for p in paths_to_check]
+        "error": "Frontend file not found",
+        "looked_at": [str(p.absolute()) for p in paths_to_check],
     }
 
 
 # ── Lifecycle events ──────────────────────────────────────────────────────────
 @app.on_event("startup")
-def on_startup():
-    """Initialize database schema on application startup."""
+async def startup_event():
+    """Initialize database schema on application startup with robust error handling."""
     logger.info("RecruitIQ API starting up…")
-    database.init_db()
-    logger.info("RecruitIQ API started.")
+    try:
+        database.init_db()
+        logger.info("RecruitIQ API started.")
+    except Exception as e:
+        logger.error(
+            f"STARTUP FAILED: {e}\n"
+            f"Check DATABASE_URL and ARCEE_API_KEY in your .env file",
+        )
+        raise
 
 
 @app.on_event("shutdown")

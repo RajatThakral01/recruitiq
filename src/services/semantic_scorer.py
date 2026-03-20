@@ -1,5 +1,4 @@
 import re
-import statistics
 from rapidfuzz import fuzz
 from src.core.domain.entities.job_description import JDEntity
 from src.core.ports.embedding_port import EmbeddingPort
@@ -8,21 +7,48 @@ from src.infrastructure.exceptions import ScoringException
 
 
 IMPACT_WORDS = [
-    "built", "scaled", "improved", "reduced", "increased",
-    "led", "designed", "developed", "launched", "optimized", "automated"
+    'built', 'scaled', 'improved', 'reduced',
+    'increased', 'led', 'designed', 'developed',
+    'launched', 'optimized', 'automated',
+    'managed', 'created', 'delivered', 'grew',
+    'achieved', 'generated', 'saved', 'drove',
+    'executed', 'implemented', 'established',
+    'transformed', 'negotiated', 'secured',
+    'expanded', 'trained', 'mentored', 'owned',
+    'spearheaded', 'oversaw', 'coordinated',
+    'streamlined', 'revamped', 'pioneered'
 ]
-
-METRIC_PATTERN = re.compile(
-    r"(\d+%|\d+\s?ms|\d+\s?users?|\$\s?\d+|\d+x\s?faster)",
-    re.IGNORECASE
-)
-
 
 class SemanticScorer:
     """
     Scores resume sections (skills, projects) using sentence-transformers embeddings
     and heuristic project quality signals.
     """
+
+    # Unified metric regex shared by score_projects() and any future methods.
+    # Matches: 40%, 200K users, 5+ requests, $1M, 3 hours, 200ms, 3x faster, 10 pts
+    METRIC_PATTERN = re.compile(
+        r'(\d+%'
+        r'|\d+[kmKM]?\+?\s*(?:users?|requests?|services?|customers?)'
+        r'|\$\s*\d+'
+        r'|\d+\s*(?:hours?|days?|weeks?|months?)'
+        r'|\d+\s?ms'
+        r'|\d+x\s?(?:faster|improvement|growth|increase)'
+        r'|\d+\s?(?:pts?|points?)'
+        r')',
+        re.IGNORECASE,
+    )
+
+    # Signals that indicate genuine project depth / technical sophistication
+    DEPTH_SIGNALS = [
+        'architecture', 'distributed', 'scalable',
+        'production', 'real-time', 'microservice',
+        'algorithm', 'optimization', 'performance',
+        'security', 'api', 'database', 'pipeline',
+        'deployed', 'open source', 'patent',
+        'published', 'research', 'machine learning',
+        'system design', 'infrastructure',
+    ]
 
     def __init__(self, embedding_port: EmbeddingPort) -> None:
         """
@@ -64,26 +90,106 @@ class SemanticScorer:
     def score_skills(self, resume_text: str, jd: JDEntity) -> float:
         """
         Computes semantic similarity between the JD's required skills and
-        the resume's skills section.
+        a combined resume text built from three sources:
+          1. Skills section (if found)
+          2. First 1500 chars of the experience/work section
+          3. First 500 chars of the projects section
 
         Returns a float score 0-100.
         """
         try:
             logger.info(f"Semantic skills scoring for JD: {jd.id}")
 
-            jd_skills_text = " ".join(jd.required_skills)
-            resume_skills_text = self._extract_section(resume_text, "skills", fallback_chars=500)
+            # Build JD comparison text from all skill-related fields
+            jd_skills_text = " ".join(
+                jd.required_skills +
+                jd.preferred_skills +
+                jd.keywords
+            )
 
-            if not jd_skills_text.strip() or not resume_skills_text.strip():
+            # 1. Skills section
+            skills_text = self._extract_section(
+                resume_text,
+                "skills", "technical skills", "core skills",
+                "key skills", "competencies", "expertise",
+                "technologies", "tech stack", "capabilities",
+                "qualifications", "areas of expertise",
+                "professional skills", "tools",
+                fallback_chars=2000
+            )
+
+            # 2. Experience / work section (up to 1500 chars)
+            experience_text = self._extract_section(
+                resume_text,
+                "experience", "work experience", "employment",
+                "work history", "professional experience",
+                fallback_chars=0
+            )[:1500]
+
+            # 3. Projects section (up to 500 chars)
+            projects_text = self._extract_section(
+                resume_text,
+                "projects", "open source",
+                fallback_chars=0
+            )[:500]
+
+            # Combine all three sources
+            resume_comparison_text = " ".join(
+                part for part in (skills_text, experience_text, projects_text) if part.strip()
+            )
+
+            if not jd_skills_text.strip() or not resume_comparison_text.strip():
                 return 0.0
 
-            similarity = self.embedding_port.get_similarity(jd_skills_text, resume_skills_text)
-            
+            similarity = self.embedding_port.get_similarity(jd_skills_text, resume_comparison_text)
+
             # Arcee Adapter returns float 0-1 (already clamped)
             # scale to 0-100
             score = round(similarity * 100, 2)
 
-            logger.info(f"Semantic skills score: {score}")
+            # Domain relevance adjustment
+            resume_lower = resume_comparison_text.lower()
+
+            # Count how many required skills appear in resume
+            required_words = [w.strip() for w in jd.required_skills if len(w.strip()) > 2]
+
+            if required_words:
+                matched_count = sum(
+                    1 for skill in required_words
+                    if skill.lower() in resume_lower
+                )
+                domain_ratio = matched_count / len(required_words)
+                # More nuanced multiplier:
+                # High raw similarity (≥60) means semantic match is already strong
+                # → apply a gentle floor so equivalent-tech candidates aren't penalised.
+                # Low raw similarity means skills are genuinely different
+                # → apply a stricter floor.
+                raw_score_before_multiplier = score
+
+                if raw_score_before_multiplier >= 60:
+                    multiplier = max(0.75, domain_ratio)
+                elif raw_score_before_multiplier >= 40:
+                    multiplier = max(0.55, domain_ratio)
+                else:
+                    multiplier = max(0.35, domain_ratio)
+
+                score = round(raw_score_before_multiplier * multiplier, 2)
+                logger.info(
+                    f"Skills domain adjustment: "
+                    f"raw={raw_score_before_multiplier} "
+                    f"{matched_count}/{len(required_words)} "
+                    f"required skills found, "
+                    f"domain_ratio={domain_ratio:.2f} "
+                    f"multiplier={multiplier:.2f}, "
+                    f"adjusted_score={score}"
+                )
+
+            logger.info(
+                f"Semantic skills score: {score} "
+                f"(skills_chars={len(skills_text)}, "
+                f"exp_chars={len(experience_text)}, "
+                f"proj_chars={len(projects_text)})"
+            )
             return score
 
         except Exception as e:
@@ -109,50 +215,75 @@ class SemanticScorer:
 
             # Impact words
             impact_words_found = sum(1 for word in IMPACT_WORDS if word in project_text)
-            impact_score = min(40.0, (impact_words_found / 3) * 40)
+            if impact_words_found >= 8:
+                impact_score = 40.0
+            elif impact_words_found >= 5:
+                impact_score = 30.0
+            elif impact_words_found >= 3:
+                impact_score = 20.0
+            elif impact_words_found >= 1:
+                impact_score = 10.0
+            else:
+                impact_score = 0.0
 
             # Metrics
-            metrics_found = len(METRIC_PATTERN.findall(resume_text))
-            metric_score = min(30.0, metrics_found * 10)
+            metrics_found = len(self.METRIC_PATTERN.findall(resume_text))
+            if metrics_found >= 5:
+                metric_score = 30.0
+            elif metrics_found >= 3:
+                metric_score = 22.0
+            elif metrics_found >= 2:
+                metric_score = 15.0
+            elif metrics_found >= 1:
+                metric_score = 8.0
+            else:
+                metric_score = 0.0
 
-            # Tech relevance (fuzzy match JD required skills in project text)
-            if jd.required_skills:
+            # Tech relevance: fuzzy match both required_skills AND keywords
+            # against the project/experience text (deduplicated)
+            combined_tech_terms = list({
+                t.lower()
+                for t in (jd.required_skills + jd.keywords)
+                if t.strip()
+            })
+            if combined_tech_terms:
                 matching_skills = sum(
                     1
-                    for skill in jd.required_skills
-                    if fuzz.partial_ratio(skill.lower(), project_text) >= 75
+                    for term in combined_tech_terms
+                    if fuzz.partial_ratio(term, project_text) >= 75
                 )
-                tech_score = min(30.0, (matching_skills / len(jd.required_skills)) * 30)
+                tech_score = min(
+                    30.0,
+                    (matching_skills / max(len(jd.required_skills), 1)) * 30
+                )
             else:
                 tech_score = 0.0
 
-            total = round(impact_score + metric_score + tech_score, 2)
+            # Depth bonus: rewards technically sophisticated project descriptions
+            depth_count = sum(1 for s in self.DEPTH_SIGNALS if s in project_text)
+            if depth_count >= 5:
+                depth_bonus = 10
+            elif depth_count >= 3:
+                depth_bonus = 6
+            elif depth_count >= 1:
+                depth_bonus = 3
+            else:
+                depth_bonus = 0
+
+            total = min(100, round(
+                impact_score + metric_score + tech_score + depth_bonus, 2
+            ))
 
             logger.info(
-                f"Project score: {total} "
-                f"(impact={impact_score}, metric={metric_score}, tech={tech_score})"
+                f"Project scoring — "
+                f"impact:{impact_score} "
+                f"metrics:{metric_score} "
+                f"tech:{tech_score} "
+                f"depth:{depth_bonus} "
+                f"total:{total}"
             )
             return total
 
         except Exception as e:
             logger.error(f"Project scoring failed: {str(e)}", exc_info=True)
             raise ScoringException("Project scoring failed.", detail=str(e))
-
-    def get_confidence(self, all_scores: dict) -> float:
-        """
-        Computes AI confidence from the spread of dimension scores.
-        Lower confidence when scores are highly uneven.
-
-        Returns a float 0-100.
-        """
-        try:
-            values = list(all_scores.values())
-            if len(values) < 2:
-                return 100.0
-            std_dev = statistics.stdev(values)
-            confidence = round(max(60.0, 100.0 - std_dev), 2)
-            logger.info(f"Confidence score: {confidence} (std_dev={round(std_dev, 2)})")
-            return confidence
-        except Exception as e:
-            logger.error(f"Confidence calculation failed: {str(e)}", exc_info=True)
-            raise ScoringException("Confidence calculation failed.", detail=str(e))

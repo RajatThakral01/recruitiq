@@ -134,6 +134,8 @@
             const [resumeFiles, setResumeFiles] = React.useState([]);
             const [error, setError] = React.useState(null);
             const [isLoading, setIsLoading] = React.useState(false);
+            const [jdInputMode, setJdInputMode] = React.useState('file');
+            const [jdPastedText, setJdPastedText] = React.useState('');
             const jdInputRef = React.useRef(null);
             const resumeInputRef = React.useRef(null);
 
@@ -155,12 +157,19 @@
             };
 
             const handleScreen = async () => {
-                if (!jdFile || resumeFiles.length === 0) return;
+                const hasJD = jdInputMode === 'file' ? !!jdFile : jdPastedText.trim().length > 50;
+                if (!hasJD || resumeFiles.length === 0) return;
                 setIsLoading(true);
                 setError(null);
                 try {
                     const jdForm = new FormData();
-                    jdForm.append("file", jdFile);
+                    if (jdInputMode === 'paste') {
+                        const blob = new Blob([jdPastedText], {type: 'text/plain'});
+                        const textFile = new File([blob], 'job_description.txt', {type: 'text/plain'});
+                        jdForm.append("file", textFile);
+                    } else {
+                        jdForm.append("file", jdFile);
+                    }
                     const jdRes = await fetch(API_BASE + "/api/upload/jd", {method:"POST", body:jdForm});
                     if (!jdRes.ok) throw new Error("JD upload failed");
                     const jdData = await jdRes.json();
@@ -186,6 +195,8 @@
                 }
             };
 
+            const hasJD = jdInputMode === 'file' ? !!jdFile : jdPastedText.trim().length > 50;
+
             return (
                 <div className="min-h-screen flex flex-col items-center justify-center pt-24 pb-16 px-6 bg-background relative overflow-hidden">
                     <TopNav />
@@ -210,20 +221,80 @@
                         </header>
 
                         <div className="w-full max-w-[860px] grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                            <section className="flex flex-col gap-3 group">
+                            <section className="flex flex-col gap-3">
                                 <div className="flex justify-between items-center px-1">
                                     <label className="text-sm font-semibold text-on-surface">Job Description</label>
-                                </div>
-                                <div onClick={() => jdInputRef.current.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleJdSelect(e.dataTransfer.files[0]); }} className="h-[180px] bg-primary-container/5 border-2 border-dashed border-primary-container/40 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-primary-container/10 transition-all duration-300 group-hover:border-primary-container/60">
-                                    <span className="material-symbols-outlined text-primary-container text-4xl mb-3">description</span>
-                                    <span className="text-on-surface font-medium text-[15px]">Drop your JD here</span>
-                                    <span className="text-outline text-xs mt-1">PDF or TXT, max 5MB</span>
-                                </div>
-                                {jdFile && (
-                                    <div className="flex items-center gap-2 bg-primary-container/20 px-3 py-1.5 rounded-full w-fit mt-1">
-                                        <span className="text-xs font-medium text-primary">{jdFile.name}</span>
-                                        <button onClick={() => setJdFile(null)} className="material-symbols-outlined text-xs text-primary/70 hover:text-primary">close</button>
+                                    <div className="flex items-center gap-1 p-0.5 rounded-full" style={{border:'1px solid rgba(255,255,255,0.1)'}}>
+                                        <button
+                                            onClick={() => { setJdInputMode('file'); setJdPastedText(''); }}
+                                            style={{
+                                                padding:'3px 12px',
+                                                borderRadius:'9999px',
+                                                fontSize:'11px',
+                                                fontWeight:'600',
+                                                border:'none',
+                                                cursor:'pointer',
+                                                background: jdInputMode === 'file' ? '#7C3AED' : 'transparent',
+                                                color: jdInputMode === 'file' ? '#fff' : 'rgba(255,255,255,0.4)',
+                                                transition:'all 0.2s'
+                                            }}
+                                        >Upload File</button>
+                                        <button
+                                            onClick={() => { setJdInputMode('paste'); setJdFile(null); }}
+                                            style={{
+                                                padding:'3px 12px',
+                                                borderRadius:'9999px',
+                                                fontSize:'11px',
+                                                fontWeight:'600',
+                                                border:'none',
+                                                cursor:'pointer',
+                                                background: jdInputMode === 'paste' ? '#7C3AED' : 'transparent',
+                                                color: jdInputMode === 'paste' ? '#fff' : 'rgba(255,255,255,0.4)',
+                                                transition:'all 0.2s'
+                                            }}
+                                        >Paste Text</button>
                                     </div>
+                                </div>
+                                {jdInputMode === 'file' ? (
+                                    <React.Fragment>
+                                        <div onClick={() => jdInputRef.current.click()} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleJdSelect(e.dataTransfer.files[0]); }} className="h-[180px] bg-primary-container/5 border-2 border-dashed border-primary-container/40 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-primary-container/10 transition-all duration-300 hover:border-primary-container/60">
+                                            <span className="material-symbols-outlined text-primary-container text-4xl mb-3">description</span>
+                                            <span className="text-on-surface font-medium text-[15px]">Drop your JD here</span>
+                                            <span className="text-outline text-xs mt-1">PDF or TXT, max 5MB</span>
+                                        </div>
+                                        {jdFile && (
+                                            <div className="flex items-center gap-2 bg-primary-container/20 px-3 py-1.5 rounded-full w-fit mt-1">
+                                                <span className="text-xs font-medium text-primary">{jdFile.name}</span>
+                                                <button onClick={() => setJdFile(null)} className="material-symbols-outlined text-xs text-primary/70 hover:text-primary">close</button>
+                                            </div>
+                                        )}
+                                    </React.Fragment>
+                                ) : (
+                                    <React.Fragment>
+                                        <textarea
+                                            value={jdPastedText}
+                                            onChange={e => setJdPastedText(e.target.value)}
+                                            placeholder="Paste your job description here..."
+                                            style={{
+                                                height:'180px',
+                                                background:'rgba(124,58,237,0.04)',
+                                                border:'2px solid rgba(124,58,237,0.4)',
+                                                borderRadius:'12px',
+                                                padding:'16px',
+                                                color:'#fff',
+                                                fontSize:'14px',
+                                                resize:'none',
+                                                width:'100%',
+                                                outline:'none',
+                                                fontFamily:'inherit',
+                                                lineHeight:'1.5',
+                                                boxSizing:'border-box'
+                                            }}
+                                        />
+                                        <span style={{fontSize:'12px',color:'rgba(255,255,255,0.3)',paddingLeft:'2px'}}>
+                                            {jdPastedText.length} characters
+                                        </span>
+                                    </React.Fragment>
                                 )}
                             </section>
 
@@ -264,9 +335,9 @@
                         <div className="w-full max-w-[860px] flex flex-col items-center gap-6">
                             <button 
                                 onClick={handleScreen}
-                                disabled={!jdFile || resumeFiles.length === 0 || isLoading}
+                                disabled={!hasJD || resumeFiles.length === 0 || isLoading}
                                 className="w-full h-[52px] bg-primary-container hover:bg-[#6D28D9] text-white font-semibold rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-primary-container/20 transition-all duration-200 active:scale-[0.98]"
-                                style={{opacity: (!jdFile || resumeFiles.length === 0 || isLoading) ? 0.4 : 1, cursor: (!jdFile || resumeFiles.length === 0 || isLoading) ? 'not-allowed' : 'pointer'}}
+                                style={{opacity: (!hasJD || resumeFiles.length === 0 || isLoading) ? 0.4 : 1, cursor: (!hasJD || resumeFiles.length === 0 || isLoading) ? 'not-allowed' : 'pointer'}}
                             >
                                 {isLoading ? 'Processing...' : 'Screen Candidates'}
                                 <span className="material-symbols-outlined text-xl">{isLoading ? 'hourglass_empty' : 'arrow_forward'}</span>

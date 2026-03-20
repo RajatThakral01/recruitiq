@@ -165,6 +165,7 @@ async def upload_resumes(files: list[UploadFile] = File(...)):
                 raw_text=text,
                 parsed_skills=parsed.get("parsed_skills", []),
                 years_experience=float(parsed.get("years_experience", 0.0)),
+                relevant_experience=float(parsed.get("relevant_experience", 0.0)),
                 education_level=parsed.get("education_level", "Other"),
                 projects=parsed.get("projects", []),
                 quality_flag=quality_flag,
@@ -211,16 +212,19 @@ async def screen_resumes(request: ScreenRequest):
         job_id = postgres_adapter.create_screening_job(request.jd_id)
         logger.info(f"Screening job {job_id} created for JD {request.jd_id}")
 
+        failed_resumes: list[str] = []
+        successful_count = 0
+
         for resume_id in request.resume_ids:
             try:
                 resume = postgres_adapter.get_resume(resume_id)
-                
+				
                 # Bypass OCR for already-stored resumes: extract text directly
                 result = scoring_engine.compute_all(resume, jd, resume.raw_text)
-                
+				
                 # Set the job_id on the result
                 result.job_id = job_id
-                
+				
                 sg = claude_adapter.generate_strengths_gaps(
                     resume.to_dict(),
                     jd.to_dict(),
@@ -232,11 +236,30 @@ async def screen_resumes(request: ScreenRequest):
                 )
                 result.strengths = sg.get("strengths", [])
                 result.gaps = sg.get("gaps", [])
-                
+				
                 postgres_adapter.save_score(result)
+                successful_count += 1
             except Exception as e:
-                logger.error(f"Failed to screen resume_id={resume_id}: {e}", exc_info=True)
+                logger.error(
+                    f"Failed to screen resume {resume_id}: {e}",
+                    exc_info=True,
+                )
+                failed_resumes.append(resume_id)
                 continue  # Skip failed resume; continue with others
+
+        if successful_count == 0:
+            msg = (
+                f"Failed to screen all resumes for job {job_id}. "
+                f"Resume IDs: {failed_resumes}"
+            )
+            logger.error(msg)
+            raise RuntimeError(msg)
+
+        if failed_resumes:
+            logger.warning(
+                f"Screening completed with failures for job {job_id}. "
+                f"Failed resume IDs: {failed_resumes}"
+            )
 
         postgres_adapter.update_job_status(job_id, "complete")
         ranked = rank_use_case.execute(job_id)
@@ -270,6 +293,15 @@ def get_results(job_id: str):
         # Try to recover JD title from first result's stored score
         jd_title = ""
         scores = postgres_adapter.get_scores_by_job(job_id)
+        if not scores and not postgres_adapter.job_exists(job_id):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": True,
+                    "message": f"Job {job_id} not found",
+                    "code": "JOB_NOT_FOUND",
+                },
+            )
         if scores:
             try:
                 jd = postgres_adapter.get_jd(scores[0].jd_id)

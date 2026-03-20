@@ -47,3 +47,8 @@ class StoragePort(ABC):
     def update_job_status(self, job_id: str, status: str) -> None:
         """Updates the status of an ongoing screening job."""
         pass
+
+    @abstractmethod
+    def job_exists(self, job_id: str) -> bool:
+        """Returns True if a screening job with the given ID exists."""
+        pass

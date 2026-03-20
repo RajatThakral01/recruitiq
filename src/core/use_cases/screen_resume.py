@@ -50,7 +50,7 @@ class ScreenResumeUseCase:
         Raises:
             InvalidFileTypeException: If file validation fails.
         """
-        start_time = time.time()
+        pipeline_start = time.time()
 
         # 1. Validate file
         logger.info(f"ScreenResumeUseCase: validating file {file_path}")
@@ -78,6 +78,7 @@ class ScreenResumeUseCase:
             raw_text=resume_text,
             parsed_skills=parsed.get("parsed_skills", []),
             years_experience=float(parsed.get("years_experience", 0.0)),
+            relevant_experience=float(parsed.get("relevant_experience", 0.0)),
             education_level=parsed.get("education_level", "Other"),
             projects=parsed.get("projects", []),
             quality_flag=quality_flag,
@@ -88,13 +89,40 @@ class ScreenResumeUseCase:
         logger.info(f"ScreenResumeUseCase: saving resume for {resume.candidate_name}")
         self.storage_port.save_resume(resume)
 
-        # 7. Run all scoring dimensions
+        # 7. Parallel LLM evaluation
+        logger.info("Step 7/8 \\u2014 Parallel LLM scoring")
+        try:
+            llm_eval = self.llm_port.evaluate_all_parallel(
+                resume_text, jd.to_dict()
+            )
+            llm_scores = {
+                "skills": llm_eval.get("skills_score"),
+                "projects": llm_eval.get("project_score"),
+                "experience": llm_eval.get("experience_score"),
+            }
+            logger.info(
+                f"LLM scores \\u2014 "
+                f"skills:{llm_scores['skills']} "
+                f"projects:{llm_scores['projects']} "
+                f"experience:{llm_scores['experience']}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Parallel LLM scoring failed, using algorithmic fallback: {e}"
+            )
+            llm_scores = {
+                "skills": None,
+                "projects": None,
+                "experience": None,
+            }
+
+        # 8. Run all scoring dimensions (pure LLM scores for semantic dimensions)
         logger.info("ScreenResumeUseCase: running scoring engine.")
         result: ScoreResultEntity = self.scoring_engine.compute_all(
-            resume, jd, resume_text
+            resume, jd, resume_text, llm_scores=llm_scores
         )
 
-        # 8. Generate strengths and gaps via LLM
+        # 9. Generate strengths and gaps via LLM
         logger.info("ScreenResumeUseCase: generating strengths and gaps.")
         sg = self.llm_port.generate_strengths_gaps(
             resume.to_dict(),
@@ -106,13 +134,13 @@ class ScreenResumeUseCase:
             },
         )
 
-        # 9. Patch result with LLM-generated fields
+        # 10. Patch result with LLM-generated fields
         result.strengths = sg.get("strengths", [])
         result.gaps = sg.get("gaps", [])
         result.job_id = job_id
-        result.processing_time_seconds = round(time.time() - start_time, 2)
+        result.processing_time_seconds = round(time.time() - pipeline_start, 2)
 
-        # 10. Persist score result
+        # 11. Persist score result
         try:
             self.storage_port.save_score(result)
             logger.info(f"ScreenResumeUseCase: score saved successfully for resume_id={resume.id}")
@@ -123,5 +151,10 @@ class ScreenResumeUseCase:
         logger.info(
             f"Resume screened: {resume.candidate_name} — "
             f"score={result.final_score} ({result.recommendation})"
+        )
+        logger.info(
+            f"Total pipeline time for "
+            f"{resume.candidate_name}: "
+            f"{time.time() - pipeline_start:.1f}s"
         )
         return result
