@@ -196,7 +196,8 @@ class PostgresAdapter(StoragePort):
                 experience_score, education_score, final_score,
                 strengths, gaps, matched_keywords, missing_keywords,
                 keyword_match_rate, confidence_score, quality_flag,
-                recommendation, processing_time_seconds, created_at
+                recommendation, warning_flags, llm_provider, llm_model, prompt_version,
+                processing_time_seconds, created_at
             ) VALUES (
                 %(id)s, %(job_id)s, %(resume_id)s, %(jd_id)s,
                 %(skills_score)s, %(ats_score)s, %(project_score)s,
@@ -204,7 +205,8 @@ class PostgresAdapter(StoragePort):
                 %(strengths)s::jsonb, %(gaps)s::jsonb,
                 %(matched_keywords)s::jsonb, %(missing_keywords)s::jsonb,
                 %(keyword_match_rate)s, %(confidence_score)s, %(quality_flag)s,
-                %(recommendation)s, %(processing_time_seconds)s, %(created_at)s
+                %(recommendation)s, %(warning_flags)s::jsonb, %(llm_provider)s, %(llm_model)s,
+                %(prompt_version)s, %(processing_time_seconds)s, %(created_at)s
             )
             ON CONFLICT (id) DO NOTHING
             RETURNING id;
@@ -228,6 +230,10 @@ class PostgresAdapter(StoragePort):
             "confidence_score": score.confidence_score,
             "quality_flag": score.quality_flag,
             "recommendation": score.recommendation,
+            "warning_flags": self._j(score.warning_flags),
+            "llm_provider": score.llm_provider,
+            "llm_model": score.llm_model,
+            "prompt_version": score.prompt_version,
             "processing_time_seconds": score.processing_time_seconds,
             "created_at": score.created_at.isoformat() if hasattr(score.created_at, "isoformat") else str(score.created_at),
         }
@@ -251,13 +257,16 @@ class PostgresAdapter(StoragePort):
                    experience_score, education_score, final_score,
                    strengths, gaps, matched_keywords, missing_keywords,
                    keyword_match_rate, confidence_score, quality_flag,
-                   recommendation, processing_time_seconds, created_at
+                     recommendation, warning_flags, llm_provider, llm_model, prompt_version,
+                     processing_time_seconds, created_at
             FROM score_results
             WHERE job_id = %s
             ORDER BY final_score DESC;
         """
         def _loads(v):
-            return v if isinstance(v, list) else json.loads(v or "[]")
+            if isinstance(v, (list, dict)):
+                return v
+            return json.loads(v or "[]")
 
         try:
             with get_connection() as conn:
@@ -286,8 +295,12 @@ class PostgresAdapter(StoragePort):
                     confidence_score=float(row[15] or 0),
                     quality_flag=row[16] or "medium",
                     recommendation=row[17] or "Not Fit",
-                    processing_time_seconds=float(row[18] or 0),
-                    created_at=row[19] if isinstance(row[19], datetime) else datetime.now(),
+                    warning_flags=_loads(row[18]) if row[18] is not None else {},
+                    llm_provider=row[19] or "",
+                    llm_model=row[20] or "",
+                    prompt_version=row[21] or "",
+                    processing_time_seconds=float(row[22] or 0),
+                    created_at=row[23] if isinstance(row[23], datetime) else datetime.now(),
                 )
                 results.append(sr)
 
@@ -347,3 +360,16 @@ class PostgresAdapter(StoragePort):
                     return cur.fetchone() is not None
         except Exception:
             return False
+
+    def get_job_status(self, job_id: str) -> str | None:
+        """Return current job status or None if job is not found."""
+        sql = "SELECT status FROM screening_jobs WHERE id = %s"
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (job_id,))
+                    row = cur.fetchone()
+            return str(row[0]) if row and row[0] else None
+        except Exception as e:
+            logger.error(f"get_job_status failed: {e}")
+            raise DatabaseException("Could not retrieve job status.", detail=str(e))

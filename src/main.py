@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,11 +12,39 @@ from src.infrastructure import database
 from src.infrastructure.config import settings
 from src.infrastructure.logger import logger
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and teardown application resources."""
+    logger.info("RecruitIQ API starting up…")
+    try:
+        database.init_db()
+        logger.info("RecruitIQ API started.")
+    except Exception as e:
+        provider = (settings.LLM_PROVIDER or "mistral").strip().lower()
+        if provider == "mistral":
+            expected_key = "MISTRAL_API_KEY (fallback: GROQ_API_KEY or GROK_API_KEY)"
+        elif provider == "groq":
+            expected_key = "GROQ_API_KEY (fallback: MISTRAL_API_KEY or GROK_API_KEY)"
+        else:
+            expected_key = "GROK_API_KEY (fallback: MISTRAL_API_KEY or GROQ_API_KEY)"
+        logger.error(
+            f"STARTUP FAILED: {e}\n"
+            f"Check DATABASE_URL and {expected_key} in your .env/.env.example file",
+        )
+        raise
+
+    try:
+        yield
+    finally:
+        logger.info("RecruitIQ API shutting down.")
+
 # ── App creation ─────────────────────────────────────────────────────────────
 app = FastAPI(
     title="RecruitIQ API",
     description="AI-powered resume screening and ranking system.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
@@ -65,24 +94,12 @@ async def serve_frontend():
         "looked_at": [str(p.absolute()) for p in paths_to_check],
     }
 
-
-# ── Lifecycle events ──────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database schema on application startup with robust error handling."""
-    logger.info("RecruitIQ API starting up…")
-    try:
-        database.init_db()
-        logger.info("RecruitIQ API started.")
-    except Exception as e:
-        logger.error(
-            f"STARTUP FAILED: {e}\n"
-            f"Check DATABASE_URL and ARCEE_API_KEY in your .env file",
-        )
-        raise
-
-
-@app.on_event("shutdown")
-def on_shutdown():
-    """Cleanup on application shutdown."""
-    logger.info("RecruitIQ API shutting down.")
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "src.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level=settings.LOG_LEVEL.lower(),
+    )

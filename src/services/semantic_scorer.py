@@ -143,22 +143,27 @@ class SemanticScorer:
 
             similarity = self.embedding_port.get_similarity(jd_skills_text, resume_comparison_text)
 
-            # Arcee Adapter returns float 0-1 (already clamped)
+            # Embedding similarity returns float 0-1 (already clamped)
             # scale to 0-100
             score = round(similarity * 100, 2)
 
             # Domain relevance adjustment
             resume_lower = resume_comparison_text.lower()
 
-            # Count how many required skills appear in resume
+            # Weighted overlap: must-have > required > preferred.
+            must_have_words = [w.strip() for w in jd.must_have if len(w.strip()) > 2]
             required_words = [w.strip() for w in jd.required_skills if len(w.strip()) > 2]
+            preferred_words = [w.strip() for w in jd.preferred_skills if len(w.strip()) > 2]
 
-            if required_words:
-                matched_count = sum(
-                    1 for skill in required_words
-                    if skill.lower() in resume_lower
-                )
-                domain_ratio = matched_count / len(required_words)
+            weighted_total = (len(must_have_words) * 3.0) + (len(required_words) * 2.0) + (len(preferred_words) * 1.0)
+
+            if weighted_total > 0:
+                matched_must = sum(1 for skill in must_have_words if skill.lower() in resume_lower)
+                matched_required = sum(1 for skill in required_words if skill.lower() in resume_lower)
+                matched_preferred = sum(1 for skill in preferred_words if skill.lower() in resume_lower)
+
+                weighted_matched = (matched_must * 3.0) + (matched_required * 2.0) + (matched_preferred * 1.0)
+                domain_ratio = weighted_matched / weighted_total
                 # More nuanced multiplier:
                 # High raw similarity (≥60) means semantic match is already strong
                 # → apply a gentle floor so equivalent-tech candidates aren't penalised.
@@ -177,8 +182,9 @@ class SemanticScorer:
                 logger.info(
                     f"Skills domain adjustment: "
                     f"raw={raw_score_before_multiplier} "
-                    f"{matched_count}/{len(required_words)} "
-                    f"required skills found, "
+                    f"must={matched_must}/{len(must_have_words)} "
+                    f"required={matched_required}/{len(required_words)} "
+                    f"preferred={matched_preferred}/{len(preferred_words)} "
                     f"domain_ratio={domain_ratio:.2f} "
                     f"multiplier={multiplier:.2f}, "
                     f"adjusted_score={score}"

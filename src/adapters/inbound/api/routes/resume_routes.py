@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import tempfile
 from pathlib import Path
@@ -8,7 +9,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
 from src.adapters.outbound.ocr.pdfplumber_adapter import PDFPlumberAdapter
-from src.adapters.outbound.llm.claude_adapter import ArceeAdapter
+from src.adapters.outbound.llm.adapter_factory import get_llm_adapter
 from src.adapters.outbound.embeddings.sentence_transformer_adapter import SentenceTransformerAdapter
 from src.adapters.outbound.storage.postgres_adapter import PostgresAdapter
 from src.services.ats_scorer import ATSScorer
@@ -26,15 +27,19 @@ from src.adapters.inbound.api.schemas.resume_schema import (
     ErrorResponse,
 )
 from src.infrastructure import database
+from src.infrastructure.config import settings
+from src.infrastructure import runtime_config
 from src.infrastructure.logger import logger
 from src.infrastructure.exceptions import (
     RecruitIQException,
     InvalidFileTypeException,
+    FileTooLargeException,
+    map_exception_to_http,
 )
 
 # ── Dependency instantiation (singletons, module-level) ──────────────────────
 pdfplumber_adapter = PDFPlumberAdapter()
-claude_adapter = ArceeAdapter()
+llm_adapter = get_llm_adapter()
 sentence_transformer_adapter = SentenceTransformerAdapter()
 postgres_adapter = PostgresAdapter()
 
@@ -42,19 +47,50 @@ ats_scorer = ATSScorer()
 semantic_scorer = SemanticScorer(sentence_transformer_adapter)
 scoring_engine = ScoringEngine(ats_scorer, semantic_scorer)
 
-screen_use_case = ScreenResumeUseCase(
-    pdfplumber_adapter, claude_adapter, scoring_engine, postgres_adapter
-)
-parse_jd_use_case = ParseJDUseCase(claude_adapter, postgres_adapter)
+def _get_use_cases():
+    """Rebuild use cases with fresh LLM adapter on every request.
+    This allows runtime provider switching to take effect immediately.
+    """
+    llm_adapter = get_llm_adapter()
+    return (
+        ScreenResumeUseCase(pdfplumber_adapter, llm_adapter, scoring_engine, postgres_adapter),
+        ParseJDUseCase(llm_adapter, postgres_adapter),
+        llm_adapter,
+    )
+screen_use_case, parse_jd_use_case, llm_adapter = _get_use_cases()
 rank_use_case = RankCandidatesUseCase(postgres_adapter)
 
 # ── Router ────────────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/api")
 
 
+def _get_upload_size_bytes(upload: UploadFile) -> int | None:
+    """Best-effort size check without reading file content into memory."""
+    try:
+        upload.file.seek(0, os.SEEK_END)
+        size = upload.file.tell()
+        upload.file.seek(0)
+        return int(size)
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 #  Health
 # --------------------------------------------------------------------------- #
+
+@router.post("/config/provider")
+def set_provider(payload: dict):
+    """Switch LLM provider at runtime for the current session."""
+    provider = (payload.get("provider") or "").strip().lower()
+    if provider not in {"mistral", "groq"}:
+        return JSONResponse(
+            status_code=400,
+            content={"message": "provider must be one of: mistral, groq", "code": "INVALID_PROVIDER"},
+        )
+    runtime_config.set_provider(provider)
+    logger.info(f"LLM provider switched to: {provider}")
+    return {"provider": provider, "status": "switched"}
 
 @router.get("/health")
 def health_check():
@@ -70,14 +106,26 @@ def health_check():
 #  Upload JD
 # --------------------------------------------------------------------------- #
 
-@router.post("/upload/jd", response_model=UploadJDResponse)
+@router.post(
+    "/upload/jd",
+    response_model=UploadJDResponse,
+    responses={400: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+)
 async def upload_jd(file: UploadFile = File(...)):
     """
     Accept a PDF or plain-text Job Description, extract its text,
-    parse it with Arcee, persist it, and return structured metadata.
+    parse it with the configured LLM provider, persist it, and return structured metadata.
     """
     tmp_path = None
     try:
+        max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+        size_bytes = _get_upload_size_bytes(file)
+        if size_bytes is not None and size_bytes > max_bytes:
+            raise FileTooLargeException(
+                f"{file.filename or 'Uploaded file'} exceeds size limit.",
+                detail=f"Maximum allowed size is {settings.MAX_FILE_SIZE_MB} MB.",
+            )
+
         suffix = Path(file.filename).suffix.lower() if file.filename else ".pdf"
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
 
@@ -91,7 +139,8 @@ async def upload_jd(file: UploadFile = File(...)):
         else:
             text = content.decode("utf-8", errors="ignore")
 
-        jd = parse_jd_use_case.execute(text)
+        _, parse_jd_use_case_req, _ = _get_use_cases()
+        jd = parse_jd_use_case_req.execute(text)
 
         return UploadJDResponse(
             jd_id=jd.id,
@@ -101,15 +150,17 @@ async def upload_jd(file: UploadFile = File(...)):
         )
     except RecruitIQException as e:
         logger.error(f"JD upload error: {e.message}", exc_info=True)
+        status, code, message = map_exception_to_http(e)
         return JSONResponse(
-            status_code=400,
-            content=ErrorResponse(message=e.message, code=type(e).__name__).model_dump(),
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
         )
     except Exception as e:
         logger.error(f"Unexpected JD upload error: {e}", exc_info=True)
+        status, code, message = map_exception_to_http(e)
         return JSONResponse(
-            status_code=400,
-            content=ErrorResponse(message=str(e), code="UPLOAD_ERROR").model_dump(),
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
         )
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -120,19 +171,23 @@ async def upload_jd(file: UploadFile = File(...)):
 #  Upload Resumes
 # --------------------------------------------------------------------------- #
 
-@router.post("/upload/resumes", response_model=UploadResumesResponse)
+@router.post(
+    "/upload/resumes",
+    response_model=UploadResumesResponse,
+    responses={400: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+)
 async def upload_resumes(files: list[UploadFile] = File(...)):
     """
-    Accept up to 10 PDF resumes, parse each with Arcee, persist them,
+    Accept up to 10 PDF resumes, parse each with the configured LLM provider, persist them,
     and return their IDs.
     """
     from src.core.domain.entities.resume import ResumeEntity
 
-    if len(files) > 10:
+    if len(files) > settings.MAX_RESUMES:
         return JSONResponse(
             status_code=400,
             content=ErrorResponse(
-                message="Maximum 10 resumes allowed per request.",
+                message=f"Maximum {settings.MAX_RESUMES} resumes allowed per request.",
                 code="TOO_MANY_FILES",
             ).model_dump(),
         )
@@ -141,7 +196,16 @@ async def upload_resumes(files: list[UploadFile] = File(...)):
     tmp_paths: list[str] = []
 
     try:
+        _, _, llm_adapter_req = _get_use_cases()
         for upload in files:
+            max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+            size_bytes = _get_upload_size_bytes(upload)
+            if size_bytes is not None and size_bytes > max_bytes:
+                raise FileTooLargeException(
+                    f"{upload.filename or 'Uploaded file'} exceeds size limit.",
+                    detail=f"Maximum allowed size is {settings.MAX_FILE_SIZE_MB} MB.",
+                )
+
             suffix = Path(upload.filename).suffix.lower() if upload.filename else ".pdf"
             if suffix != ".pdf":
                 raise InvalidFileTypeException(
@@ -156,7 +220,7 @@ async def upload_resumes(files: list[UploadFile] = File(...)):
 
             text = pdfplumber_adapter.extract_text(tmp_path)
             quality_flag = scoring_engine.get_quality_flag(text)
-            parsed = claude_adapter.parse_resume(text)
+            parsed = llm_adapter_req.parse_resume(text)
 
             resume = ResumeEntity(
                 id=str(uuid.uuid4()),
@@ -180,15 +244,17 @@ async def upload_resumes(files: list[UploadFile] = File(...)):
         )
     except RecruitIQException as e:
         logger.error(f"Resume upload error: {e.message}", exc_info=True)
+        status, code, message = map_exception_to_http(e)
         return JSONResponse(
-            status_code=400,
-            content=ErrorResponse(message=e.message, code=type(e).__name__).model_dump(),
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
         )
     except Exception as e:
         logger.error(f"Unexpected resume upload error: {e}", exc_info=True)
+        status, code, message = map_exception_to_http(e)
         return JSONResponse(
-            status_code=400,
-            content=ErrorResponse(message=str(e), code="UPLOAD_ERROR").model_dump(),
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
         )
     finally:
         for p in tmp_paths:
@@ -200,7 +266,11 @@ async def upload_resumes(files: list[UploadFile] = File(...)):
 #  Screen
 # --------------------------------------------------------------------------- #
 
-@router.post("/screen", response_model=ScreeningResponse)
+@router.post(
+    "/screen",
+    response_model=ScreeningResponse,
+    responses={400: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}},
+)
 async def screen_resumes(request: ScreenRequest):
     """
     Trigger the full screening pipeline for a list of resumes against a JD.
@@ -208,6 +278,7 @@ async def screen_resumes(request: ScreenRequest):
     """
     job_id = None
     try:
+        _, _, llm_adapter_req = _get_use_cases()
         jd = postgres_adapter.get_jd(request.jd_id)
         job_id = postgres_adapter.create_screening_job(request.jd_id)
         logger.info(f"Screening job {job_id} created for JD {request.jd_id}")
@@ -217,15 +288,44 @@ async def screen_resumes(request: ScreenRequest):
 
         for resume_id in request.resume_ids:
             try:
+                resume_start = time.perf_counter()
                 resume = postgres_adapter.get_resume(resume_id)
-				
+
+                llm_scores = {
+                    "skills": None,
+                    "projects": None,
+                    "experience": None,
+                }
+                scoring_mode = (settings.SCORING_MODE or "legacy").strip().lower()
+                if scoring_mode in {"hybrid", "llm_first"}:
+                    try:
+                        llm_eval = llm_adapter_req.evaluate_all_parallel(
+                            resume.raw_text,
+                            jd.to_dict(),
+                        )
+                        llm_scores = {
+                            "skills": llm_eval.get("skills_score"),
+                            "projects": llm_eval.get("project_score"),
+                            "experience": llm_eval.get("experience_score"),
+                        }
+                    except Exception as llm_error:
+                        logger.warning(
+                            f"LLM parallel evaluation failed for resume {resume_id}; "
+                            f"falling back to algorithmic-only dimensions: {llm_error}"
+                        )
+
                 # Bypass OCR for already-stored resumes: extract text directly
-                result = scoring_engine.compute_all(resume, jd, resume.raw_text)
-				
+                result = scoring_engine.compute_all(
+                    resume,
+                    jd,
+                    resume.raw_text,
+                    llm_scores=llm_scores,
+                )
+
                 # Set the job_id on the result
                 result.job_id = job_id
-				
-                sg = claude_adapter.generate_strengths_gaps(
+
+                sg = llm_adapter_req.generate_strengths_gaps(
                     resume.to_dict(),
                     jd.to_dict(),
                     {
@@ -236,7 +336,8 @@ async def screen_resumes(request: ScreenRequest):
                 )
                 result.strengths = sg.get("strengths", [])
                 result.gaps = sg.get("gaps", [])
-				
+                result.processing_time_seconds = round(time.perf_counter() - resume_start, 3)
+
                 postgres_adapter.save_score(result)
                 successful_count += 1
             except Exception as e:
@@ -275,9 +376,10 @@ async def screen_resumes(request: ScreenRequest):
         logger.error(f"Screening pipeline error: {e}", exc_info=True)
         if job_id:
             postgres_adapter.update_job_status(job_id, "failed")
+        status, code, message = map_exception_to_http(e)
         return JSONResponse(
-            status_code=500,
-            content=ErrorResponse(message=str(e), code="SCREENING_ERROR").model_dump(),
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
         )
 
 
@@ -285,7 +387,11 @@ async def screen_resumes(request: ScreenRequest):
 #  Results
 # --------------------------------------------------------------------------- #
 
-@router.get("/results/{job_id}", response_model=ScreeningResponse)
+@router.get(
+    "/results/{job_id}",
+    response_model=ScreeningResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
 def get_results(job_id: str):
     """Retrieve ranked results for a previously submitted screening job."""
     try:
@@ -309,16 +415,28 @@ def get_results(job_id: str):
             except Exception:
                 pass
 
+        job_status = postgres_adapter.get_job_status(job_id) or "unknown"
         return ScreeningResponse(
             job_id=job_id,
-            status="complete",
+            status=job_status,
             jd_title=jd_title,
             total_screened=len(ranked),
             results=[CandidateResult(**r) for r in ranked],
         )
+    except RecruitIQException as e:
+        logger.error(f"Results retrieval error: {e.message}", exc_info=True)
+        status, code, message = map_exception_to_http(e)
+        return JSONResponse(
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
+        )
     except Exception as e:
         logger.error(f"Results retrieval error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        status, code, message = map_exception_to_http(e)
+        return JSONResponse(
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
+        )
 
 
 @router.get("/results/{job_id}/candidate/{resume_id}")
@@ -355,8 +473,23 @@ def get_candidate_result(job_id: str, resume_id: str):
             "recommendation": score.recommendation,
             "processing_time_seconds": score.processing_time_seconds,
         }
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        status, code, message = map_exception_to_http(e)
+        return JSONResponse(
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
+        )
+    except RecruitIQException as e:
+        logger.error(f"Candidate result retrieval error: {e.message}", exc_info=True)
+        status, code, message = map_exception_to_http(e)
+        return JSONResponse(
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
+        )
     except Exception as e:
         logger.error(f"Candidate result retrieval error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        status, code, message = map_exception_to_http(e)
+        return JSONResponse(
+            status_code=status,
+            content=ErrorResponse(message=message, code=code).model_dump(),
+        )

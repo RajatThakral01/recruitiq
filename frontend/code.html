@@ -135,9 +135,23 @@
             const [error, setError] = React.useState(null);
             const [isLoading, setIsLoading] = React.useState(false);
             const [jdInputMode, setJdInputMode] = React.useState('file');
+            const [llmProvider, setLlmProvider] = React.useState('mistral');
             const [jdPastedText, setJdPastedText] = React.useState('');
             const jdInputRef = React.useRef(null);
             const resumeInputRef = React.useRef(null);
+
+            const handleProviderSwitch = async (provider) => {
+                setLlmProvider(provider);
+                try {
+                    await fetch(API_BASE + "/api/config/provider", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({provider})
+                    });
+                } catch(err) {
+                    console.error("Provider switch failed:", err);
+                }
+            };
 
             const handleJdSelect = (file) => {
                 if (file && (file.name.endsWith('.pdf') || file.name.endsWith('.txt'))) {
@@ -333,6 +347,39 @@
                         </div>
 
                         <div className="w-full max-w-[860px] flex flex-col items-center gap-6">
+                            <div style={{display:'flex',alignItems:'center',gap:'12px',alignSelf:'flex-start'}}>
+                                <span style={{fontSize:'12px',color:'rgba(255,255,255,0.4)',fontWeight:'500'}}>LLM Provider</span>
+                                <div style={{display:'flex',alignItems:'center',gap:'4px',padding:'3px',borderRadius:'9999px',border:'1px solid rgba(255,255,255,0.1)'}}>
+                                    <button
+                                        onClick={() => handleProviderSwitch('mistral')}
+                                        style={{
+                                            padding:'4px 14px',
+                                            borderRadius:'9999px',
+                                            fontSize:'11px',
+                                            fontWeight:'600',
+                                            border:'none',
+                                            cursor:'pointer',
+                                            background: llmProvider === 'mistral' ? '#7C3AED' : 'transparent',
+                                            color: llmProvider === 'mistral' ? '#fff' : 'rgba(255,255,255,0.4)',
+                                            transition:'all 0.2s'
+                                        }}
+                                    >Mistral</button>
+                                    <button
+                                        onClick={() => handleProviderSwitch('groq')}
+                                        style={{
+                                            padding:'4px 14px',
+                                            borderRadius:'9999px',
+                                            fontSize:'11px',
+                                            fontWeight:'600',
+                                            border:'none',
+                                            cursor:'pointer',
+                                            background: llmProvider === 'groq' ? '#7C3AED' : 'transparent',
+                                            color: llmProvider === 'groq' ? '#fff' : 'rgba(255,255,255,0.4)',
+                                            transition:'all 0.2s'
+                                        }}
+                                    >Groq</button>
+                                </div>
+                            </div>
                             <button 
                                 onClick={handleScreen}
                                 disabled={!hasJD || resumeFiles.length === 0 || isLoading}

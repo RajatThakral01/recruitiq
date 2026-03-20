@@ -52,3 +52,8 @@ class StoragePort(ABC):
     def job_exists(self, job_id: str) -> bool:
         """Returns True if a screening job with the given ID exists."""
         pass
+
+    @abstractmethod
+    def get_job_status(self, job_id: str) -> str | None:
+        """Returns the screening job status if present, otherwise None."""
+        pass

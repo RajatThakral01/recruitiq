@@ -25,7 +25,11 @@ class ScoreResultEntity:
     confidence_score: float       # AI confidence 0-100
     quality_flag: str             # "high", "medium", "low"
     recommendation: str           # "Strong Fit", "Moderate Fit", "Not Fit"
-    processing_time_seconds: float
+    warning_flags: dict[str, Any] # non-fatal warnings (partial failures/fallbacks)
+    llm_provider: str = ""
+    llm_model: str = ""
+    prompt_version: str = ""
+    processing_time_seconds: float = 0.0
     created_at: datetime = field(default_factory=datetime.now)
 
     @classmethod
@@ -52,6 +56,10 @@ class ScoreResultEntity:
             confidence_score=float(data.get("confidence_score", 100.0)),
             quality_flag=data.get("quality_flag", "medium"),
             recommendation=data.get("recommendation", "Not Fit"),
+            warning_flags=data.get("warning_flags", {}) or {},
+            llm_provider=data.get("llm_provider", "") or "",
+            llm_model=data.get("llm_model", "") or "",
+            prompt_version=data.get("prompt_version", "") or "",
             processing_time_seconds=float(data.get("processing_time_seconds", 0.0)),
             created_at=data.get("created_at", datetime.now())
         )

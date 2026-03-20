@@ -1,6 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
 .env
-__pycache__
-*.pyc
-.DS_Store
-uploads/
+.env.local
+.env.*.local
+
+# Logs
 logs/
+*.log
+
+# Mac junk
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / editor
+.vscode/
+.idea/
+.qoder/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Uploads and temp files
+uploads/
+tmp/
+temp/
+*.tmp
+
+# Database
+*.sqlite3
+*.db
+
+# Sample data (real resumes)
+data/sample_resumes/
+
+# Docker
+*.override.yml

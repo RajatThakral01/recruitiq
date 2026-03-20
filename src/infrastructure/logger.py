@@ -35,3 +35,18 @@ def setup_logger():
 
 # Export configured logger instance
 logger = setup_logger()
+
+
+def log_event(level: str, event: str, **fields) -> None:
+    """Emit structured logs as a stable key-value message."""
+    payload = " ".join(f"{key}={value}" for key, value in fields.items())
+    message = f"event={event} {payload}".strip()
+    level_name = (level or "info").strip().lower()
+    if level_name == "debug":
+        logger.debug(message)
+    elif level_name == "warning":
+        logger.warning(message)
+    elif level_name == "error":
+        logger.error(message)
+    else:
+        logger.info(message)

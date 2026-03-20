@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 class LLMPort(ABC):
     """
@@ -26,17 +27,32 @@ class LLMPort(ABC):
         pass
 
     @abstractmethod
-    def evaluate_skills_match(self, resume_text: str, jd: dict) -> dict:
+    def evaluate_skills_match(
+        self,
+        resume_text: str,
+        jd: dict,
+        shared_context: dict[str, Any] | None = None,
+    ) -> dict:
         """LLM evaluation of skills match and technology transferability."""
         pass
 
     @abstractmethod
-    def evaluate_project_quality(self, resume_text: str, jd: dict) -> dict:
+    def evaluate_project_quality(
+        self,
+        resume_text: str,
+        jd: dict,
+        shared_context: dict[str, Any] | None = None,
+    ) -> dict:
         """LLM evaluation of project depth, impact and relevance."""
         pass
 
     @abstractmethod
-    def evaluate_experience_relevance(self, resume_text: str, jd: dict) -> dict:
+    def evaluate_experience_relevance(
+        self,
+        resume_text: str,
+        jd: dict,
+        shared_context: dict[str, Any] | None = None,
+    ) -> dict:
         """LLM evaluation of experience relevance, career trajectory and domain match."""
         pass
 

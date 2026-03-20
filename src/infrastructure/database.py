@@ -112,9 +112,18 @@ def init_db():
         confidence_score FLOAT,
         quality_flag VARCHAR(20),
         recommendation VARCHAR(20),
+        warning_flags JSONB,
+        llm_provider VARCHAR(100),
+        llm_model VARCHAR(150),
+        prompt_version VARCHAR(50),
         processing_time_seconds FLOAT,
         created_at TIMESTAMP DEFAULT NOW()
     );
+
+    ALTER TABLE score_results ADD COLUMN IF NOT EXISTS warning_flags JSONB DEFAULT '{}'::jsonb;
+    ALTER TABLE score_results ADD COLUMN IF NOT EXISTS llm_provider VARCHAR(100) DEFAULT '';
+    ALTER TABLE score_results ADD COLUMN IF NOT EXISTS llm_model VARCHAR(150) DEFAULT '';
+    ALTER TABLE score_results ADD COLUMN IF NOT EXISTS prompt_version VARCHAR(50) DEFAULT '';
     """
     try:
         with DatabaseManager.get_connection() as conn:

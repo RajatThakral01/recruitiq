@@ -1,10 +1,12 @@
 import uuid
+import time
 from datetime import datetime
 from src.core.domain.entities.resume import ResumeEntity
 from src.core.domain.entities.job_description import JDEntity
 from src.core.domain.entities.score_result import ScoreResultEntity
 from src.services.ats_scorer import ATSScorer
 from src.services.semantic_scorer import SemanticScorer
+from src.infrastructure.config import settings
 from src.infrastructure.logger import logger
 from src.infrastructure.exceptions import ScoringException
 
@@ -87,6 +89,51 @@ class ScoringEngine:
         self.ats_scorer = ats_scorer
         self.semantic_scorer = semantic_scorer
 
+    def _resolve_dimension_score(
+        self,
+        *,
+        dimension: str,
+        algorithmic_score: float,
+        llm_score: float | None,
+        scoring_mode: str,
+    ) -> float:
+        """Resolve final score for a dimension according to scoring mode.
+
+        Modes:
+          - legacy: keep existing algorithmic score only.
+          - llm_first: prefer LLM score whenever available.
+          - hybrid: blend 60% LLM + 40% algorithmic when available.
+        """
+        if scoring_mode == "legacy":
+            resolved = round(float(algorithmic_score), 2)
+            logger.info(
+            f"{dimension} mode=legacy: algo={algorithmic_score} final={resolved}"
+            )
+            return resolved
+
+        if llm_score is None:
+            resolved = round(float(algorithmic_score), 2)
+            logger.info(
+                f"{dimension} mode={scoring_mode}: llm_missing algo={algorithmic_score} final={resolved}"
+            )
+            return resolved
+
+        if scoring_mode == "llm_first":
+            resolved = round(float(llm_score), 2)
+            logger.info(
+                f"{dimension} mode=llm_first: llm={llm_score} algo={algorithmic_score} final={resolved}"
+            )
+            return resolved
+
+        if dimension == "skills":
+            resolved = round(float(llm_score) * 0.80 + float(algorithmic_score) * 0.20, 2)
+        else:
+            resolved = round(float(llm_score) * 0.65 + float(algorithmic_score) * 0.35, 2)
+        logger.info(
+            f"{dimension} mode={scoring_mode}: llm={llm_score} algo={algorithmic_score} final={resolved}"
+        )
+        return resolved
+
     # ────────────────────────────────────────────────────────────
     # Individual dimension scorers
     # ────────────────────────────────────────────────────────────
@@ -111,7 +158,7 @@ class ScoringEngine:
         """
         lower_text = resume_text.lower()
 
-        # ── SIGNAL 1: Years of relevant experience (max 35 pts) ───────────
+        # ── SIGNAL 1: Years of relevant experience (max 30 pts) ───────────
         relevant = getattr(resume, 'relevant_experience', None)
         if relevant is not None and relevant > 0:
             years = relevant
@@ -126,77 +173,97 @@ class ScoringEngine:
         required = jd.min_experience
 
         if required <= 0:
-            years_score = 35  # no minimum set — full marks
+            years_score = 30  # no minimum set — full marks
         elif years >= required * 1.5:
-            years_score = 35
+            years_score = 30
         elif years >= required:
-            years_score = 28
+            years_score = 24
         elif years >= required * 0.7:
-            years_score = 18
+            years_score = 15
         elif years >= required * 0.5:
-            years_score = 10
+            years_score = 8
         else:
             years_score = 5
 
-        # ── SIGNAL 2: Employment type quality (max 25 pts) ────────────────
+        # ── SIGNAL 2: Employment type quality (max 20 pts) ────────────────
         fulltime_count = sum(1 for s in FULLTIME_SIGNALS if s in lower_text)
         intern_count   = sum(1 for s in INTERN_SIGNALS   if s in lower_text)
 
+        # Relevant internships should contribute meaningfully, but less than full-time roles.
         if fulltime_count >= 2:
-            employment_score = 25
-        elif fulltime_count == 1 and intern_count <= 1:
             employment_score = 20
+        elif fulltime_count == 1 and intern_count <= 1:
+            employment_score = 16
         elif fulltime_count == 1 and intern_count > 1:
-            employment_score = 15
+            employment_score = 14
         elif intern_count >= 2:
-            employment_score = 10
+            employment_score = 11
         elif intern_count == 1:
-            employment_score = 7
+            employment_score = 8
         else:
-            employment_score = 12  # neutral / insufficient signals
+            employment_score = 10  # neutral / insufficient signals
 
-        # ── SIGNAL 3: Role title match to JD (max 20 pts) ────────────────
+        # ── SIGNAL 3: Role + skill relevance to JD (max 25 pts) ───────────
         title_words = [w for w in jd.title.lower().split() if len(w) > 3]
         matched_title_words = sum(
             1 for w in title_words if w in lower_text
         )
         title_match_ratio = matched_title_words / max(len(title_words), 1)
 
-        if title_match_ratio >= 0.7:
-            title_score = 20
-        elif title_match_ratio >= 0.4:
-            title_score = 14
-        elif title_match_ratio >= 0.2:
-            title_score = 8
-        else:
-            title_score = 3
+        required_skill_terms = [s.strip().lower() for s in jd.required_skills if s.strip()]
+        matched_required_skill_terms = sum(1 for s in required_skill_terms if s in lower_text)
+        required_skill_ratio = matched_required_skill_terms / max(len(required_skill_terms), 1)
 
-        # ── SIGNAL 4: Career progression quality (max 20 pts) ────────────
+        relevance_ratio = (0.55 * title_match_ratio) + (0.45 * required_skill_ratio)
+        if relevance_ratio >= 0.7:
+            role_relevance_score = 25
+        elif relevance_ratio >= 0.5:
+            role_relevance_score = 20
+        elif relevance_ratio >= 0.35:
+            role_relevance_score = 14
+        elif relevance_ratio >= 0.2:
+            role_relevance_score = 8
+        else:
+            role_relevance_score = 4
+
+        # ── SIGNAL 4: Company context and role environment (max 15 pts) ───
+        company_tier_count = sum(1 for s in COMPANY_TIER_SIGNALS if s in lower_text)
+        if company_tier_count >= 3:
+            company_context_score = 15
+        elif company_tier_count >= 2:
+            company_context_score = 12
+        elif company_tier_count >= 1:
+            company_context_score = 9
+        else:
+            # If explicit company signals are absent, use role relevance as proxy context.
+            company_context_score = 7 if relevance_ratio >= 0.45 else 5
+
+        # ── SIGNAL 5: Career progression quality (max 10 pts) ─────────────
         progression_count   = sum(1 for s in PROGRESSION_SIGNALS   if s in lower_text)
-        company_tier_count  = sum(1 for s in COMPANY_TIER_SIGNALS   if s in lower_text)
 
-        if progression_count >= 4 and company_tier_count >= 2:
-            progression_score = 20
-        elif progression_count >= 3 or company_tier_count >= 2:
-            progression_score = 16
-        elif progression_count >= 2 or company_tier_count >= 1:
-            progression_score = 12
-        elif progression_count >= 1:
+        if progression_count >= 4:
+            progression_score = 10
+        elif progression_count >= 3:
             progression_score = 8
-        else:
+        elif progression_count >= 2:
+            progression_score = 6
+        elif progression_count >= 1:
             progression_score = 4
+        else:
+            progression_score = 2
 
         # ── Combine ───────────────────────────────────────────────────────
         final_experience_score = min(
             100,
-            years_score + employment_score + title_score + progression_score,
+            years_score + employment_score + role_relevance_score + company_context_score + progression_score,
         )
 
         logger.info(
             f"Experience breakdown — "
             f"years:{years_score} (source={years_source}, years={years}) "
             f"employment:{employment_score} "
-            f"title:{title_score} "
+            f"role_relevance:{role_relevance_score} "
+            f"company_context:{company_context_score} "
             f"progression:{progression_score} "
             f"total:{final_experience_score}"
         )
@@ -247,9 +314,8 @@ class ScoringEngine:
         final = round(final, 2)
         logger.info(
             f"Final score — "
-        			# LLM override: use LLM scores directly where available; algorithmic
-        			# scores act as fallback only when LLM scores are missing.
-            f"ats:{ats_score}×0.20={ats_score*0.20:.1f} "
+            f"skills:{skills_score}×{WEIGHTS['skills']:.2f}={skills_score*WEIGHTS['skills']:.1f} "
+            f"ats:{ats_score}×{WEIGHTS['ats']:.2f}={ats_score*WEIGHTS['ats']:.1f} "
             f"proj:{project_score}×0.20={project_score*0.20:.1f} "
             f"exp:{experience_score}×0.25={experience_score*0.25:.1f} "
             f"edu:{education_score}×0.10={education_score*0.10:.1f} "
@@ -325,9 +391,10 @@ class ScoringEngine:
         """
         Runs all scoring dimensions and assembles a complete ScoreResultEntity.
 
-        If llm_scores is provided (keys: 'skills', 'projects', 'experience'),
-        each dimension that has an LLM score is blended:
-          final_dimension = LLM * 0.60 + algorithmic * 0.40
+                If llm_scores is provided (keys: 'skills', 'projects', 'experience'),
+                dimension resolution is based on SCORING_MODE:
+                    - llm_first: use LLM score directly when available
+                    - hybrid / legacy: blend LLM 60% + algorithmic 40%
 
         Steps:
           1. ATS keyword scoring
@@ -340,9 +407,15 @@ class ScoringEngine:
           8. AI confidence
         """
         try:
+            pipeline_start = time.perf_counter()
             logger.info(
                 f"Starting full scoring pipeline for resume_id={resume.id}, jd_id={jd.id}"
             )
+
+            scoring_mode = (settings.SCORING_MODE or "legacy").strip().lower()
+            if scoring_mode not in {"legacy", "hybrid", "llm_first"}:
+                logger.warning(f"Unknown SCORING_MODE='{scoring_mode}', falling back to legacy")
+                scoring_mode = "legacy"
 
             # 1. ATS
             logger.info("Step 1/8 — ATS scoring")
@@ -352,43 +425,79 @@ class ScoringEngine:
             missing_keywords = ats_result["missing_keywords"]
             keyword_match_rate = ats_result["keyword_match_rate"]
 
+            llm_scores = llm_scores or {}
+            warning_flags: dict[str, str] = {}
+
+            needs_algo_skills = not (
+                scoring_mode == "llm_first" and llm_scores.get("skills") is not None
+            )
+            needs_algo_projects = not (
+                scoring_mode == "llm_first" and llm_scores.get("projects") is not None
+            )
+            needs_algo_experience = not (
+                scoring_mode == "llm_first" and llm_scores.get("experience") is not None
+            )
+
             # 2. Semantic skills
-            logger.info("Step 2/8 — Semantic skills scoring")
-            skills_score = self.semantic_scorer.score_skills(resume_text, jd)
+            if needs_algo_skills:
+                logger.info("Step 2/8 — Semantic skills scoring")
+                skills_score = self.semantic_scorer.score_skills(resume_text, jd)
+            else:
+                logger.info("Step 2/8 — Semantic skills scoring skipped (llm_first)")
+                skills_score = 50.0
 
             # 3. Project quality
-            logger.info("Step 3/8 — Project quality scoring")
-            project_score = self.semantic_scorer.score_projects(resume_text, jd)
+            if needs_algo_projects:
+                logger.info("Step 3/8 — Project quality scoring")
+                project_score = self.semantic_scorer.score_projects(resume_text, jd)
+            else:
+                logger.info("Step 3/8 — Project quality scoring skipped (llm_first)")
+                project_score = 40.0
 
             # 4. Experience
-            logger.info("Step 4/8 — Experience scoring")
-            experience_score = self.compute_experience_score(resume, jd, resume_text)
+            if needs_algo_experience:
+                logger.info("Step 4/8 — Experience scoring")
+                experience_score = self.compute_experience_score(resume, jd, resume_text)
+            else:
+                logger.info("Step 4/8 — Experience scoring skipped (llm_first)")
+                experience_score = 40.0
 
-            # LLM blend: 60% LLM + 40% algorithmic for skills / projects / experience
+            # Resolve LLM-influenced dimensions according to configured scoring mode
             if llm_scores:
-                if llm_scores.get("skills") is not None:
-                    algo_skills = skills_score
-                    skills_score = round(
-                        llm_scores["skills"] * 0.60 + algo_skills * 0.40, 2)
-                    logger.info(
-                        f"Skills blend: LLM={llm_scores['skills']} "
-                        f"algo={algo_skills} final={skills_score}")
-
-                if llm_scores.get("projects") is not None:
-                    algo_projects = project_score
-                    project_score = round(
-                        llm_scores["projects"] * 0.60 + algo_projects * 0.40, 2)
-                    logger.info(
-                        f"Projects blend: LLM={llm_scores['projects']} "
-                        f"algo={algo_projects} final={project_score}")
-
-                if llm_scores.get("experience") is not None:
-                    algo_experience = experience_score
-                    experience_score = round(
-                        llm_scores["experience"] * 0.60 + algo_experience * 0.40, 2)
-                    logger.info(
-                        f"Experience blend: LLM={llm_scores['experience']} "
-                        f"algo={algo_experience} final={experience_score}")
+                if scoring_mode in {"hybrid", "llm_first"}:
+                    for dimension_key in ("skills", "projects", "experience"):
+                        if llm_scores.get(dimension_key) is None:
+                            warning_flags[f"{dimension_key}_llm_fallback"] = (
+                                "Used algorithmic fallback because LLM score was unavailable."
+                            )
+                            logger.warning(
+                                f"fallback_trigger dimension={dimension_key} mode={scoring_mode} reason=llm_score_unavailable"
+                            )
+                skills_score = self._resolve_dimension_score(
+                    dimension="skills",
+                    algorithmic_score=skills_score,
+                    llm_score=llm_scores.get("skills"),
+                    scoring_mode=scoring_mode,
+                )
+                project_score = self._resolve_dimension_score(
+                    dimension="projects",
+                    algorithmic_score=project_score,
+                    llm_score=llm_scores.get("projects"),
+                    scoring_mode=scoring_mode,
+                )
+                experience_score = self._resolve_dimension_score(
+                    dimension="experience",
+                    algorithmic_score=experience_score,
+                    llm_score=llm_scores.get("experience"),
+                    scoring_mode=scoring_mode,
+                )
+            elif scoring_mode in {"hybrid", "llm_first"}:
+                warning_flags["llm_scores_unavailable"] = (
+                    "LLM dimension outputs were unavailable; algorithmic fallback used for all semantic dimensions."
+                )
+                logger.warning(
+                    f"fallback_trigger dimension=all mode={scoring_mode} reason=llm_scores_unavailable"
+                )
 
             # 5. Education
             logger.info("Step 5/8 — Education scoring")
@@ -421,6 +530,12 @@ class ScoringEngine:
                 f"recommendation={recommendation}, quality={quality_flag}"
             )
 
+            total_latency = round(time.perf_counter() - pipeline_start, 3)
+            logger.info(
+                f"scoring_pipeline_complete latency_seconds={total_latency} mode={scoring_mode} "
+                f"warning_count={len(warning_flags)}"
+            )
+
             return ScoreResultEntity(
                 id=str(uuid.uuid4()),
                 resume_id=resume.id,
@@ -440,6 +555,16 @@ class ScoringEngine:
                 confidence_score=confidence_score,
                 quality_flag=quality_flag,
                 recommendation=recommendation,
+                warning_flags=warning_flags,
+                llm_provider=settings.LLM_PROVIDER if scoring_mode in {"hybrid", "llm_first"} else "",
+                llm_model=(
+                    settings.MISTRAL_MODEL if settings.LLM_PROVIDER == "mistral" else settings.GROQ_MODEL
+                )
+                if scoring_mode in {"hybrid", "llm_first"}
+                else "",
+                prompt_version="scoring-prompts-v1"
+                if scoring_mode in {"hybrid", "llm_first"}
+                else "",
                 processing_time_seconds=0.0,  # set by the calling use case
                 created_at=datetime.now(),
             )

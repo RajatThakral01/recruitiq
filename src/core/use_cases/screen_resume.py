@@ -9,8 +9,9 @@ from src.core.ports.ocr_port import OCRPort
 from src.core.ports.llm_port import LLMPort
 from src.core.ports.storage_port import StoragePort
 from src.services.scoring_engine import ScoringEngine
+from src.infrastructure.config import settings
 from src.infrastructure.logger import logger
-from src.infrastructure.exceptions import InvalidFileTypeException
+from src.infrastructure.exceptions import InvalidFileTypeException, LLMAuthenticationException
 
 
 class ScreenResumeUseCase:
@@ -89,32 +90,46 @@ class ScreenResumeUseCase:
         logger.info(f"ScreenResumeUseCase: saving resume for {resume.candidate_name}")
         self.storage_port.save_resume(resume)
 
-        # 7. Parallel LLM evaluation
-        logger.info("Step 7/8 \\u2014 Parallel LLM scoring")
-        try:
-            llm_eval = self.llm_port.evaluate_all_parallel(
-                resume_text, jd.to_dict()
-            )
-            llm_scores = {
-                "skills": llm_eval.get("skills_score"),
-                "projects": llm_eval.get("project_score"),
-                "experience": llm_eval.get("experience_score"),
-            }
-            logger.info(
-                f"LLM scores \\u2014 "
-                f"skills:{llm_scores['skills']} "
-                f"projects:{llm_scores['projects']} "
-                f"experience:{llm_scores['experience']}"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Parallel LLM scoring failed, using algorithmic fallback: {e}"
-            )
-            llm_scores = {
-                "skills": None,
-                "projects": None,
-                "experience": None,
-            }
+        # 7. Optional LLM evaluation by scoring mode
+        scoring_mode = (settings.SCORING_MODE or "legacy").strip().lower()
+        llm_scores = {
+            "skills": None,
+            "projects": None,
+            "experience": None,
+        }
+        if scoring_mode in {"hybrid", "llm_first"}:
+            logger.info("Step 7/8 — Parallel LLM scoring")
+            try:
+                llm_eval = self.llm_port.evaluate_all_parallel(
+                    resume_text, jd.to_dict()
+                )
+                llm_scores = {
+                    "skills": llm_eval.get("skills_score"),
+                    "projects": llm_eval.get("project_score"),
+                    "experience": llm_eval.get("experience_score"),
+                }
+                logger.info(
+                    f"LLM scores — "
+                    f"skills:{llm_scores['skills']} "
+                    f"projects:{llm_scores['projects']} "
+                    f"experience:{llm_scores['experience']}"
+                )
+            except LLMAuthenticationException as e:
+                logger.warning(
+                    f"LLM auth failed during parallel scoring; "
+                    f"using algorithmic scoring fallback for this request: {e}"
+                )
+                llm_scores = {
+                    "skills": None,
+                    "projects": None,
+                    "experience": None,
+                }
+            except Exception as e:
+                logger.warning(
+                    f"Parallel LLM scoring failed, using algorithmic fallback: {e}"
+                )
+        else:
+            logger.info("Step 7/8 — Parallel LLM scoring skipped (legacy mode)")
 
         # 8. Run all scoring dimensions (pure LLM scores for semantic dimensions)
         logger.info("ScreenResumeUseCase: running scoring engine.")
@@ -124,15 +139,22 @@ class ScreenResumeUseCase:
 
         # 9. Generate strengths and gaps via LLM
         logger.info("ScreenResumeUseCase: generating strengths and gaps.")
-        sg = self.llm_port.generate_strengths_gaps(
-            resume.to_dict(),
-            jd.to_dict(),
-            {
-                "final_score": result.final_score,
-                "skills_score": result.skills_score,
-                "ats_score": result.ats_score,
-            },
-        )
+        try:
+            sg = self.llm_port.generate_strengths_gaps(
+                resume.to_dict(),
+                jd.to_dict(),
+                {
+                    "final_score": result.final_score,
+                    "skills_score": result.skills_score,
+                    "ats_score": result.ats_score,
+                },
+            )
+        except LLMAuthenticationException as e:
+            logger.warning(
+                f"LLM auth failed during strengths/gaps generation; "
+                f"continuing without strengths/gaps: {e}"
+            )
+            sg = {"strengths": [], "gaps": []}
 
         # 10. Patch result with LLM-generated fields
         result.strengths = sg.get("strengths", [])

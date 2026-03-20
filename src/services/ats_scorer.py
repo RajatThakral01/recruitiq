@@ -300,9 +300,10 @@ class ATSScorer:
             logger.info(f"Starting ATS scoring for JD: {jd.id}")
 
             # ── keyword prep ─────────────────────────────────────────────
+            must_have_keywords = self._filter_and_normalize_keywords(jd.must_have)
             required_keywords  = self._filter_and_normalize_keywords(jd.required_skills)
             preferred_keywords = self._filter_and_normalize_keywords(jd.preferred_skills)
-            existing  = set(required_keywords + preferred_keywords)
+            existing  = set(must_have_keywords + required_keywords + preferred_keywords)
             other_raw = [k for k in jd.keywords if self._normalize(k) not in existing]
             other_keywords = self._filter_and_normalize_keywords(other_raw)
 
@@ -310,6 +311,8 @@ class ATSScorer:
             normalized_resume = self._normalize(resume_text)
             resume_words = normalized_resume.split()
 
+            matched_must_have, missing_must_have = self._match_keywords(
+                must_have_keywords, normalized_resume, resume_words)
             matched_required,  missing_required  = self._match_keywords(
                 required_keywords,  normalized_resume, resume_words)
             matched_preferred, missing_preferred = self._match_keywords(
@@ -320,16 +323,23 @@ class ATSScorer:
             sections_found = self._check_sections(resume_text)
 
             # ── FACTOR 1: Hard Skills Match (max 40 pts) ─────────────────
+            must_have_score = (len(matched_must_have) / len(must_have_keywords)) * 100 \
+                              if must_have_keywords else 50.0
             required_score  = (len(matched_required)  / len(required_keywords))  * 100 \
-                              if required_keywords  else 50.0
+                              if required_keywords else 50.0
             preferred_score = (len(matched_preferred) / len(preferred_keywords)) * 100 \
                               if preferred_keywords else 50.0
-            base_skills_score = required_score * 0.70 + preferred_score * 0.30
+            # Prioritize must-have > required > preferred skills.
+            base_skills_score = (
+                must_have_score * 0.50
+                + required_score * 0.35
+                + preferred_score * 0.15
+            )
 
             # Frequency bonus: how many times each matched keyword appears (max +10)
             lower_resume = resume_text.lower()
             freq_bonus = 0.0
-            for kw in matched_required + matched_preferred:
+            for kw in matched_must_have + matched_required + matched_preferred:
                 occurrences = lower_resume.count(kw.lower())
                 if occurrences >= 4:
                     freq_bonus += 3
@@ -343,7 +353,7 @@ class ATSScorer:
             context_bonus = 0.0
             if experience_text:
                 lower_exp = experience_text.lower()
-                for kw in matched_required:
+                for kw in matched_must_have + matched_required:
                     if kw.lower() in lower_exp:
                         context_bonus += 3
             context_bonus = min(10.0, context_bonus)
@@ -442,11 +452,11 @@ class ATSScorer:
             )
 
             # ── Reporting ─────────────────────────────────────────────────
-            all_matched_keywords = matched_required + matched_preferred + matched_other
-            missing_keywords     = missing_required + missing_preferred
-            total_scored         = len(required_keywords) + len(preferred_keywords)
+            all_matched_keywords = matched_must_have + matched_required + matched_preferred + matched_other
+            missing_keywords     = missing_must_have + missing_required + missing_preferred
+            total_scored         = len(must_have_keywords) + len(required_keywords) + len(preferred_keywords)
             keyword_match_rate   = (
-                (len(matched_required) + len(matched_preferred)) / total_scored * 100
+                (len(matched_must_have) + len(matched_required) + len(matched_preferred)) / total_scored * 100
                 if total_scored > 0 else 0.0
             )
 
