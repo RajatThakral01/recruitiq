@@ -4,6 +4,8 @@
 
 🚀 **Live Demo:** [recruitiq-production.up.railway.app](https://recruitiq-production.up.railway.app)
 
+🎥 **Demo Video:** [Watch on Google Drive](https://drive.google.com/file/d/1j77GSxO9xZ89sjZc-6fEvvxWyqdCXpaj/view?usp=sharing)
+
 ---
 
 ## What is RecruitIQ?
