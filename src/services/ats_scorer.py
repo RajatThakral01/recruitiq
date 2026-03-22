@@ -358,7 +358,7 @@ class ATSScorer:
                         context_bonus += 3
             context_bonus = min(10.0, context_bonus)
 
-            hard_skills_score = min(40.0, base_skills_score * 0.40 + freq_bonus + context_bonus)
+            hard_skills_score = min(40.0, base_skills_score * 0.20 + freq_bonus + context_bonus)
 
             # ── FACTOR 2: Experience Alignment (max 30 pts) ──────────────
             lower_text   = resume_text.lower()
@@ -442,9 +442,11 @@ class ATSScorer:
             )
 
             # ── Final ATS score ───────────────────────────────────────────
+            keyword_boost = min(20.0, base_skills_score * 0.20)
             final_ats_score = round(
                 min(100.0,
                     hard_skills_score
+                    + keyword_boost
                     + experience_alignment_score
                     + education_score
                     + context_nlp_score),

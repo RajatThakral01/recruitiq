@@ -327,9 +327,9 @@ class ScoringEngine:
         """
         Returns a hire recommendation string based on final score.
         """
-        if final_score >= 65:
+        if final_score >= 75:
             return "Strong Fit"
-        elif final_score >= 45:
+        elif final_score >= 55:
             return "Moderate Fit"
         return "Not Fit"
 

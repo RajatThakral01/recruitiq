@@ -344,7 +344,10 @@ Extract structured data and return ONLY valid JSON:
     including internships, part-time roles, research positions, and contract work,
     then convert to years as a float. Add up ALL roles listed, include internships,
     for current roles calculate until today.
-    Convert total months to years rounded to 1 decimal.>,
+    Convert total months to years rounded to 1 decimal.
+    IMPORTANT: years_experience is the TOTAL duration of employment, NOT skill-specific experience.
+    Do NOT attribute the full role duration to every technology mentioned in that role.
+    A person who used PostgreSQL for 2 months in a 1-year role has 2 months of PostgreSQL experience, not 1 year.>,
   "relevant_experience": <float - ONLY count experience where the candidate's
     PRIMARY DAILY WORK directly matches the job type.
 
@@ -401,11 +404,16 @@ Rules for ALL fields:
   copywriting, budget management, SEO etc.
   Include ALL of them, minimum 5 skills.
 
+
 - years_experience: total months of ALL professional
   experience (including internships, part-time, research,
   contract). Add up ALL roles. For current roles calculate
   until today. Never use only the latest role duration.
   Convert total months to years, round to 1 decimal.
+  This is TOTAL employment duration only — not skill duration.
+  Do NOT say someone has X years of a specific technology
+  just because they worked at a company for X years.
+  Only count months where that specific skill was actively used daily.
 
 - relevant_experience: STRICT domain match only.
   Full-time same domain = 100% credit.
