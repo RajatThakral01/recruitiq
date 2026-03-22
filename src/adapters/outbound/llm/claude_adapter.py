@@ -348,15 +348,25 @@ Extract structured data and return ONLY valid JSON:
     IMPORTANT: years_experience is the TOTAL duration of employment, NOT skill-specific experience.
     Do NOT attribute the full role duration to every technology mentioned in that role.
     A person who used PostgreSQL for 2 months in a 1-year role has 2 months of PostgreSQL experience, not 1 year.>,
+
   "relevant_experience": <float - ONLY count experience where the candidate's
     PRIMARY DAILY WORK directly matches the job type.
 
-    Be STRICT and CONSERVATIVE:
-    - Backend engineer role: only count months where candidate wrote backend
-      code daily. Data analysis, frontend work, research = 0.
-    - Data analyst role: only count months doing actual data analysis.
-      Backend, ops, marketing = 0.
-    - Marketing role: only count marketing work. Engineering, finance = 0.
+    Be EXTREMELY STRICT and CONSERVATIVE. When in doubt, return 0.0.
+    - Backend engineer role: ONLY count months where candidate wrote backend
+      code daily as their PRIMARY job. Data analysis, growth, marketing,
+      operations, research = 0.0. No exceptions.
+    - Data analyst role: ONLY count months doing actual data analysis daily.
+      Backend, ops, marketing, growth = 0.0.
+    - AI/ML engineer role: ONLY count months building AI/ML systems daily.
+      Data analysis without model building = 0.0.
+    - Marketing role: ONLY count marketing work. Engineering, finance = 0.0.
+    - If a candidate has ONLY done internships in adjacent or different domains,
+      relevant_experience should be 0.0 or at most 0.2.
+    - A data analyst applying for a backend role has 0.0 relevant experience.
+    - A growth intern applying for an engineering role has 0.0 relevant experience.
+    - NEVER give credit for transferable skills here — that is handled elsewhere.
+      This field is ONLY about direct domain match of daily work.
 
     Multipliers by role type:
     - Full-time role in same domain: count 100% (1.0x)

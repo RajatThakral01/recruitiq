@@ -137,11 +137,16 @@ SCORING GUIDE (apply to any role type):
 
 Output ONLY valid JSON:
 \nCALIBRATION RULES — read these last and apply strictly:
-- Internship-only experience for a role requiring 2+ years full-time cannot score above 65.
-- Full-time production experience at a reputable company for a matching role should score 70-85.
-- If a candidate's domain is adjacent but not a direct match, cap score at 60.
-- Do not inflate scores to be kind. An honest moderate score (50-64) is more useful than a generous strong score.
-- The score gap between candidates should reflect their actual difference in fit for this specific role.
+    - If the JD explicitly states X+ years of experience required and the candidate has less than X years of DIRECTLY relevant experience, the experience_score MUST be below 50. No exceptions.
+    - If the candidate has 0 directly relevant experience (different domain entirely), experience_score must be 20-30 maximum.
+    - If the candidate has less than 50% of the required years, experience_score must be below 45.
+    - If the candidate has adjacent but not direct domain experience, cap score at 55.
+    - A data analyst applying for a backend engineer role = 0 relevant years, score 20-30.
+    - A growth intern applying for a backend engineer role = 0 relevant years, score 20-25.
+    - An AI/ML engineer applying for a backend engineer role = partial credit, score 45-55.
+    - Only give 70+ when the candidate has direct domain experience meeting at least 70% of the required years.
+    - Do not inflate scores to be kind. An honest low score is more useful than a generous high score.
+    - The experience score should reflect REALITY, not potential.
 {
   "experience_score": <float 0-100>,
   "domain_match_score": <float 0-100>,
