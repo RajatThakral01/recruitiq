@@ -2,8 +2,6 @@
 
 > Screen resumes in seconds, not hours. RecruitIQ uses AI to score, rank, and explain every candidate against a job description.
 
-🚀 **Live Demo:** [recruitiq-production.up.railway.app](https://recruitiq-production.up.railway.app)
-
 🎥 **Demo Video:** [Watch on Google Drive](https://drive.google.com/file/d/1j77GSxO9xZ89sjZc-6fEvvxWyqdCXpaj/view?usp=sharing)
 
 ---
